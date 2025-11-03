@@ -16,10 +16,7 @@ void send_response(int cli, int code, const char *msg, const char *body) {
         "HTTP/1.1 %d %s\r\n"
         "Server: Tiny\r\n"
         "Content-Length: %ld\r\n"
-        "Content-Type: text/html\r\n\r\n"
-        "<html>\n"
-        "<head><title>tiny</title></head>\n"
-        "<body>\n",
+        "Content-Type: text/html\r\n\r\n",
         code, msg, strlen(body));
     send(cli, header, strlen(header), 0);
     send(cli, body, strlen(body), 0);
@@ -69,55 +66,68 @@ int main(int argc, char **argv){
             continue; 
         }
         char request_buf[4096];
-        while (1){
-            // read(int fildes, void *buf, size_t nbyte);
-            ssize_t nb = read(cli_socket, request_buf, sizeof(request_buf)-1);
-            //fgets(char * restrict str, int size, FILE * restrict stream);
-            
-            // http request parsing <HTTP Method> <Request URL> <HTTP Version>
-            // GET /index.html HTTP/1.1
-            char *method, *url, *version;
-            method = strtok(request_buf, " ");
-            url = strtok(NULL," /");
-            version = strtok(NULL," ");
 
-            int status = 200; // 기본 status
-            char body_buf[4096];        
-            char header_buf[512];
+        // read(int fildes, void *buf, size_t nbyte);
+        ssize_t nb = read(cli_socket, request_buf, sizeof(request_buf)-1);
+        if (nb <= 0) { close(cli_socket); continue; }
+        request_buf[nb] = '\0';                      
 
-            //GET만 받기
+        // request line 
+        // request buf 에서 첫 \r\n 찾아서 request line 문자열로 만들기
+        char *line_end = strstr(request_buf, "\r\n");
+        if (!line_end) { send_response(cli_socket, 400, "Bad Request", "<h1>400 Bad Request</h1>\r\n"); break; }
+        *line_end = '\0';
 
-            if (!method || strcmp(method, "GET") != 0) {
-                send_response(cli_socket, 400, "Bad Request", "<h1>400 Bad Request</h1>\n</body>\n</html>\r\n");
-                continue;
-            }
-              //GET URL확인 
+        // http request parsing <HTTP Method> <Request URL> <HTTP Version>
+        // GET /index.html HTTP/1.1
+        char *method, *url, *version;
+        method = strtok(request_buf, " ");
+        url = strtok(NULL," ");
+        version = strtok(NULL," ");
 
-            // url 열기 
-            int open_fd = open(url, O_RDONLY);
-            if (open_fd < 0) {
-                send_response(cli_socket, 404, "Not Found", "<h1>404 Not Found</h1>\n</body>\n</html>\r\n");
-                continue;
-            }      
-            
-            // url 파일 읽고 바디 버퍼에 넣기
-            ssize_t read_nb = read(open_fd, body_buf,sizeof(body_buf));
-            if (read_nb < 0 ) {perror("read error"); exit(1);}
+        // 루트 → index.html
+        if (strcmp(url, "/") == 0) url = "/index.html";
 
-            // header 
-            sprintf(header_buf,
-                "HTTP/1.1 200 OK\r\n"
-                "Server: Tiny\r\n"
-                "Content-Length: %ld\r\n"
-                "Content-Type: text/html\r\n\r\n",
-                read_nb
-            );
+        // 선행 '/' 제거해서 상대경로로
+        if (url[0] == '/') url++;
 
-            send(cli_socket,header_buf,strlen(header_buf), 0);
-            send(cli_socket,body_buf, read_nb, 0);
+        printf("URL: %s\n", url);
+        int status = 200; // 기본 status
+        char body_buf[4096];        
+        char header_buf[512];
 
-            close(open_fd);
+        //GET만 받기
+        if (!method || strcmp(method, "GET") != 0) {
+            send_response(cli_socket, 400, "Bad Request", "<h1>400 Bad Request</h1>\r\n");
+            continue;
         }
+          //GET URL확인 
+
+        // url 열기 
+        int open_fd = open(url, O_RDONLY);
+        if (open_fd < 0) {
+            send_response(cli_socket, 404, "Not Found", "<h1>404 Not Found</h1>>\r\n");
+            continue;
+        }      
+        
+        // url 파일 읽고 바디 버퍼에 넣기
+        ssize_t read_nb = read(open_fd, body_buf,sizeof(body_buf));
+        if (read_nb < 0 ) {perror("read error"); exit(1);}
+
+        // header 
+        sprintf(header_buf,
+            "HTTP/1.1 200 OK\r\n"
+            "Server: Tiny\r\n"
+            "Content-Length: %ld\r\n"
+            "Content-Type: text/html\r\n\r\n",
+            read_nb
+        );
+
+        send(cli_socket,header_buf,strlen(header_buf), 0);
+        send(cli_socket,body_buf, read_nb, 0);
+        close(open_fd);
+
     }
+
     close(newsocket);
 }
