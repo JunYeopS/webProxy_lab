@@ -9,6 +9,7 @@
 #include "csapp.h"
 #include <sys/socket.h>
 #include <stdio.h>
+#include <stdlib.h> //setenv()
 
 void send_response(int cli, int code, const char *msg, const char *body) {
     char header[512];
@@ -85,14 +86,51 @@ int main(int argc, char **argv){
         url = strtok(NULL," ");
         version = strtok(NULL," ");
 
-        // 루트 → index.html
+        char *query = strchr(url, '?'); // '?' 찾기
+        if (query) {
+            *query = '\0';
+            query++;               // ? 뒤로 포인터 이동 query는 x&y
+        }
+        
+        if (strcmp(url, "/cgi-bin/adder") == 0){
+          // url이 /cgi-bin/adder?2&3 일때 CGI
+          char *num1 = query;
+          char *num2 = strchr(query, '&');
+          if (num2) {
+              *num2 = '\0';      // 첫번째 num 끊어주기 
+              num2++;            // & 뒤로 포인터 이동
+          }
+
+          char query_env[MAXLINE];
+          sprintf(query_env, "first=%s&second=%s", num1, num2);
+
+          char cgi_header_buf[MAXLINE];
+          sprintf(cgi_header_buf,
+            "HTTP/1.1 200 OK\r\n"
+            "Server: Tiny\r\n"
+            );
+        
+          pid_t pid = fork();
+          if (pid == 0){ //child 
+            
+            send(cli_socket, cgi_header_buf,strlen(cgi_header_buf),0);
+
+            setenv("QUERY_STRING", query_env, 1);
+            dup2(cli_socket, STDOUT_FILENO);
+            execl("./cgi-bin/adder", "adder", NULL);
+          }
+          wait(NULL);
+          close(cli_socket);
+          // continue;
+        }
+
+        // 루트 index.html
         if (strcmp(url, "/") == 0) url = "/index.html";
 
         // 선행 '/' 제거해서 상대경로로
         if (url[0] == '/') url++;
 
         printf("URL: %s\n", url);
-        int status = 200; // 기본 status
         char body_buf[4096];        
         char header_buf[512];
 
