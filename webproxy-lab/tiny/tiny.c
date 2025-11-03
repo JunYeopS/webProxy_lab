@@ -7,9 +7,11 @@
  *   - Fixed sprintf() aliasing issue in serve_static(), and clienterror().
  */
 #include "csapp.h"
+#include "csapp.c"
 #include <sys/socket.h>
 #include <stdio.h>
 #include <stdlib.h> //setenv()
+#include <sys/stat.h> //fstat()
 
 void send_response(int cli, int code, const char *msg, const char *body) {
     char header[512];
@@ -121,17 +123,17 @@ int main(int argc, char **argv){
           }
           wait(NULL);
           close(cli_socket);
-          // continue;
+          continue;
         }
 
         // 루트 index.html
-        if (strcmp(url, "/") == 0) url = "/index.html";
+        if (strcmp(url, "/") == 0) url = "/home.html";
 
         // 선행 '/' 제거해서 상대경로로
         if (url[0] == '/') url++;
 
         printf("URL: %s\n", url);
-        char body_buf[4096];        
+        // char body_buf[4096];        
         char header_buf[512];
 
         //GET만 받기
@@ -148,10 +150,31 @@ int main(int argc, char **argv){
             continue;
         }      
         
-        // url 파일 읽고 바디 버퍼에 넣기
-        ssize_t read_nb = read(open_fd, body_buf,sizeof(body_buf));
-        if (read_nb < 0 ) {perror("read error"); exit(1);}
+        // // url 파일 읽고 바디 버퍼에 넣기
+        // ssize_t read_nb = read(open_fd, body_buf,sizeof(body_buf));
+        // if (read_nb < 0 ) {perror("read error"); exit(1);}
 
+        // 파일 metadata 구조체 stat
+        struct stat sb;
+        // fstat(int fildes, struct stat *buf);
+        if (fstat(open_fd, &sb) < 0) { 
+          perror("fstat error"); 
+          close(open_fd); exit(1); 
+        }
+        
+        // file size 가져오기 
+        size_t body_size = (size_t)sb.st_size;
+
+        char *body_buf = (char *)malloc(body_size);
+        if (!body_buf) { perror("malloc error"); close(open_fd); exit(1); }
+
+        // rio_readn - Robustly read n bytes (unbuffered)
+        ssize_t read_nb = rio_readn(open_fd, body_buf, body_size);
+        if (read_nb < 0) {
+          perror("read error");
+          free(body_buf);
+          close(open_fd); exit(1); 
+        }
         // header 
         sprintf(header_buf,
             "HTTP/1.1 200 OK\r\n"
@@ -162,7 +185,9 @@ int main(int argc, char **argv){
         );
 
         send(cli_socket,header_buf,strlen(header_buf), 0);
-        send(cli_socket,body_buf, read_nb, 0);
+        rio_writen(cli_socket, body_buf, read_nb);
+
+        free(body_buf);
         close(open_fd);
 
     }
