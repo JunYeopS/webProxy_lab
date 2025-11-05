@@ -44,10 +44,9 @@ static void doit_proxy(int clientfd) {
     }
 
     // URI parse: host, path, port 
-    // 예) uri = "http://example.com:8080/index.html"
+    // 예) uri = "http://localhost:8080/index.html"
     char host[MAXLINE], path[MAXLINE], port[16];
     parse_uri(uri, host, path, port);
-
 
     /* 조건 HTTP/1.0 만 허용 */
     char server_req[MAXLINE];
@@ -57,6 +56,7 @@ static void doit_proxy(int clientfd) {
     // 나머지 headers 담기 
     char hdrs[MAXLINE*8];
     int has_host = 0;
+    //host 찾기 
     request_headers(&rio_client, host, hdrs, sizeof(hdrs), &has_host);
 
     // HTTP 1.0은 Host가 없을 수 있음
@@ -73,7 +73,7 @@ static void doit_proxy(int clientfd) {
         "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n"
         "Connection: close\r\n"
         "Proxy-Connection: close\r\n"
-        "%s"  // 클라이언트에서 가져온 기타 header
+        "%s"  // 기타 header
         "\r\n", 
         path,
         host_line,
@@ -96,7 +96,7 @@ static void doit_proxy(int clientfd) {
     Close(serverfd);
 }
 
-/* 절대 경로 처리 
+/* 절대 url 처리 
   http://host[:port]/path  (default port 80) */
 static void parse_uri(const char *uri, char *host, char *path, char *port) {
     const char *u = uri;
