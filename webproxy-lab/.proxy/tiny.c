@@ -7,296 +7,196 @@
  *   - Fixed sprintf() aliasing issue in serve_static(), and clienterror().
  */
 #include "csapp.h"
+#include "csapp.c"
+// #include <sys/socket.h>
+// #include <stdio.h>
+// #include <stdlib.h> //setenv()
+// #include <sys/stat.h> //fstat()
 
-void doit(int fd);
-void read_requesthdrs(rio_t *rp);
-int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize);
-void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
-void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
-                 char *longmsg);
-
-int main(int argc, char **argv)
-{
-  int listenfd, connfd;
-  char hostname[MAXLINE], port[MAXLINE];
-  socklen_t clientlen;
-  struct sockaddr_storage clientaddr;
-
-  /* Check command line args */
-  if (argc != 2)
-  {
-    fprintf(stderr, "usage: %s <port>\n", argv[0]);
-    exit(1);
-  }
-
-  listenfd = Open_listenfd(argv[1]);
-  while (1)
-  {
-    clientlen = sizeof(clientaddr);
-    connfd = Accept(listenfd, (SA *)&clientaddr,
-                    &clientlen); // line:netp:tiny:accept
-    Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE,
-                0);
-    printf("Accepted connection from (%s, %s)\n", hostname, port);
-    doit(connfd);  // line:netp:tiny:doit
-    Close(connfd); // line:netp:tiny:close
-  }
+void send_response(int cli, int code, const char *msg, const char *body) {
+    char header[512];
+    sprintf(header,
+        "HTTP/1.1 %d %s\r\n"
+        "Server: Tiny\r\n"
+        "Content-Length: %ld\r\n"
+        "Content-Type: text/html\r\n"
+        "Connection: close\r\n\r\n",  
+        code, msg, strlen(body));
+    send(cli, header, strlen(header), 0);
+    send(cli, body, strlen(body), 0);
 }
 
-/*
- * doit - handle one HTTP request/response transaction
- */
-void doit(int fd)
-{
-  int is_static;
-  struct stat sbuf;
-  char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
-  char filename[MAXLINE], cgiargs[MAXLINE];
-  rio_t rio;
-
-  /* Read request line and headers */
-  Rio_readinitb(&rio, fd);
-  if (!Rio_readlineb(&rio, buf, MAXLINE))
-    return;
-  printf("%s", buf);
-  sscanf(buf, "%s %s %s", method, uri, version);
-  if (strcasecmp(method, "GET"))
-  {
-    clienterror(fd, method, "501", "Not Implemented",
-                "Tiny does not implement this method");
-    return;
-  }
-  read_requesthdrs(&rio);
-
-  /* Parse URI from GET request */
-  is_static = parse_uri(uri, filename, cgiargs);
-  if (stat(filename, &sbuf) < 0)
-  {
-    clienterror(fd, filename, "404", "Not found",
-                "Tiny couldn't find this file");
-    return;
-  }
-
-  if (is_static)
-  { /* Serve static content */
-    if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode))
-    {
-      clienterror(fd, filename, "403", "Forbidden",
-                  "Tiny couldn't read the file");
-      return;
+int main(int argc, char **argv){
+    if (argc != 2) { 
+        fprintf(stderr,"usage: %s <port>\n", argv[0]); exit(1); 
     }
-    serve_static(fd, filename, sbuf.st_size);
-  }
-  else
-  { /* Serve dynamic content */
-    if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode))
-    {
-      clienterror(fd, filename, "403", "Forbidden",
-                  "Tiny couldn't run the CGI program");
-      return;
+   
+    struct sockaddr_in serveraddr;
+    serveraddr.sin_family = AF_INET; //IPv4
+    serveraddr.sin_addr.s_addr = htonl(INADDR_ANY); // 모두 허용 (0.0.0.0) // big endian으로 
+    serveraddr.sin_port= htons(atoi(argv[1]));
+
+    int newsocket = socket(serveraddr.sin_family, SOCK_STREAM, 0);
+    if (newsocket < 0){
+        exit(1);
     }
-    serve_dynamic(fd, filename, cgiargs);
-  }
-}
-
-/*
- * read_requesthdrs - read HTTP request headers
- */
-void read_requesthdrs(rio_t *rp)
-{
-  char buf[MAXLINE];
-
-  Rio_readlineb(rp, buf, MAXLINE);
-  printf("%s", buf);
-  while (strcmp(buf, "\r\n"))
-  {
-    Rio_readlineb(rp, buf, MAXLINE);
-    printf("%s", buf);
-  }
-  return;
-}
-
-/*
- * parse_uri - parse URI into filename and CGI args
- *             return 0 if dynamic content, 1 if static
- */
-int parse_uri(char *uri, char *filename, char *cgiargs)
-{
-  char *ptr;
-
-  if (!strstr(uri, "cgi-bin"))
-  { /* Static content */
-    strcpy(cgiargs, "");
-    strcpy(filename, ".");
-    strcat(filename, uri);
-    if (uri[strlen(uri) - 1] == '/')
-      strcat(filename, "home.html");
-    return 1;
-  }
-  else
-  { /* Dynamic content */
-    ptr = index(uri, '?');
-    if (ptr)
-    {
-      strcpy(cgiargs, ptr + 1);
-      *ptr = '\0';
-    }
-    else
-      strcpy(cgiargs, "");
-    strcpy(filename, ".");
-    strcat(filename, uri);
-    return 0;
-  }
-}
-
-/*
- * serve_static - copy a file back to the client
- */
-void serve_static(int fd, char *filename, int filesize)
-{
-  int srcfd;
-  char *srcp, filetype[MAXLINE];
-
-  char buf[MAXBUF];
-  char *p = buf;
-  int n;
-  int remaining = sizeof(buf);
-
-  /* Send response headers to client */
-  get_filetype(filename, filetype);
-
-  /* Build the HTTP response headers correctly - use separate buffers or append */
-  n = snprintf(p, remaining, "HTTP/1.0 200 OK\r\n");
-  p += n;
-  remaining -= n;
-
-  n = snprintf(p, remaining, "Server: Tiny Web Server\r\n");
-  p += n;
-  remaining -= n;
-
-  n = snprintf(p, remaining, "Connection: close\r\n");
-  p += n;
-  remaining -= n;
-
-  n = snprintf(p, remaining, "Content-length: %d\r\n", filesize);
-  p += n;
-  remaining -= n;
-
-  n = snprintf(p, remaining, "Content-type: %s\r\n\r\n", filetype);
-  p += n;
-  remaining -= n;
-
-  Rio_writen(fd, buf, strlen(buf));
-  printf("Response headers:\n");
-  printf("%s", buf);
-
-  /* Send response body to client */
-  srcfd = Open(filename, O_RDONLY, 0);
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
-  Close(srcfd);
-  Rio_writen(fd, srcp, filesize);
-  Munmap(srcp, filesize);
-}
-
-/*
- * get_filetype - derive file type from file name
- */
-void get_filetype(char *filename, char *filetype)
-{
-  if (strstr(filename, ".html"))
-    strcpy(filetype, "text/html");
-  else if (strstr(filename, ".gif"))
-    strcpy(filetype, "image/gif");
-  else if (strstr(filename, ".png"))
-    strcpy(filetype, "image/png");
-  else if (strstr(filename, ".jpg"))
-    strcpy(filetype, "image/jpeg");
-  else
-    strcpy(filetype, "text/plain");
-}
-
-/*
- * serve_dynamic - run a CGI program on behalf of the client
- */
-void serve_dynamic(int fd, char *filename, char *cgiargs)
-{
-  char buf[MAXLINE], *emptylist[] = {NULL};
-  pid_t pid;
-
-  /* Return first part of HTTP response */
-  sprintf(buf, "HTTP/1.0 200 OK\r\n");
-  Rio_writen(fd, buf, strlen(buf));
-  sprintf(buf, "Server: Tiny Web Server\r\n");
-  Rio_writen(fd, buf, strlen(buf));
-
-  /* Create a child process to handle the CGI program */
-  if ((pid = Fork()) < 0)
-  { /* Fork failed */
-    perror("Fork failed");
-    return;
-  }
-
-  if (pid == 0)
-  { /* Child process */
-    /* Real server would set all CGI vars here */
-    setenv("QUERY_STRING", cgiargs, 1);
-
-    /* Redirect stdout to client */
-    if (Dup2(fd, STDOUT_FILENO) < 0)
-    {
-      perror("Dup2 error");
-      exit(1);
-    }
-    Close(fd);
-
-    /* Run CGI program */
-    Execve(filename, emptylist, environ);
-
-    /* If we get here, Execve failed */
-    perror("Execve error");
-    exit(1);
-  }
-  else
-  { /* Parent process */
-    /* Parent waits for child to terminate */
-    int status;
-    if (waitpid(pid, &status, 0) < 0)
-    {
-      perror("Wait error");
+    
+    int opt = 1;
+    if (setsockopt(newsocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+        exit(1);
     }
 
-    printf("Child process %d terminated with status %d\n", pid, status);
-    /* Parent continues normally - returns to doit() */
-  }
-  /* When we return from here, doit() will close the connection */
-}
+    socklen_t address_len = sizeof(serveraddr);
 
-/*
- * clienterror - returns an error message to the client
- */
-void clienterror(int fd, char *cause, char *errnum,
-                 char *shortmsg, char *longmsg)
-{
-  char buf[MAXLINE], body[MAXBUF];
+    if (bind(newsocket, (struct sockaddr *)&serveraddr, address_len) < 0){
+        exit(1);
+    }
 
-  /* Build the HTTP response body */
-  sprintf(body, "<html><title>Tiny Error</title>");
-  sprintf(body, "%s<body bgcolor="
-                "ffffff"
-                ">\r\n",
-          body);
-  sprintf(body, "%s%s: %s\r\n", body, errnum, shortmsg);
-  sprintf(body, "%s<p>%s: %s\r\n", body, longmsg, cause);
-  sprintf(body, "%s<hr><em>The Tiny Web server</em>\r\n", body);
+    if (listen(newsocket, 1024) < 0){
+        exit(1);
+    }
+    printf("listening on 0.0.0.0:%s\n", argv[1]);
 
-  /* Print the HTTP response */
-  sprintf(buf, "HTTP/1.0 %s %s\r\n", errnum, shortmsg);
-  Rio_writen(fd, buf, strlen(buf));
-  sprintf(buf, "Content-type: text/html\r\n");
-  Rio_writen(fd, buf, strlen(buf));
-  sprintf(buf, "Content-length: %d\r\n\r\n", (int)strlen(body));
-  Rio_writen(fd, buf, strlen(buf));
-  Rio_writen(fd, body, strlen(body));
+    while (1){
+        // client용 
+        struct sockaddr_in clientaddr;
+        socklen_t c_addr_len = sizeof(clientaddr);
+        
+        // client 통신용 socket 생성 
+        int cli_socket = accept(newsocket,(struct sockaddr *restrict)&clientaddr,&c_addr_len);
+
+        if (cli_socket < 0) { perror("accept");
+            continue; 
+        }
+        char request_buf[4096];
+
+        // read(int fildes, void *buf, size_t nbyte);
+        ssize_t nb = read(cli_socket, request_buf, sizeof(request_buf)-1);
+        if (nb <= 0) { close(cli_socket); continue; }
+        request_buf[nb] = '\0';                      
+
+        // request line 
+        // request buf 에서 첫 \r\n 찾아서 request line 문자열로 만들기
+        char *line_end = strstr(request_buf, "\r\n");
+        if (!line_end) { send_response(cli_socket, 400, "Bad Request", "<h1>400 Bad Request</h1>\r\n"); close(cli_socket); continue; }
+        *line_end = '\0';
+
+        // http request parsing <HTTP Method> <Request URL> <HTTP Version>
+        // GET /index.html HTTP/1.1
+        char *method, *url, *version;
+        method = strtok(request_buf, " ");
+        url = strtok(NULL," ");
+        version = strtok(NULL," ");
+
+        char *query = strchr(url, '?'); // '?' 찾기
+        if (query) {
+            *query = '\0';
+            query++;               // ? 뒤로 포인터 이동 query는 x&y
+        }
+        
+        if (strcmp(url, "/cgi-bin/adder") == 0){
+          // url이 /cgi-bin/adder?2&3 일때 CGI
+          char *num1 = query;
+          char *num2 = strchr(query, '&');
+          if (num2) {
+              *num2 = '\0';      // 첫번째 num 끊어주기 
+              num2++;            // & 뒤로 포인터 이동
+          }
+
+          char query_env[MAXLINE];
+          sprintf(query_env, "first=%s&second=%s", num1, num2);
+
+          char cgi_header_buf[MAXLINE];
+          sprintf(cgi_header_buf,
+            "HTTP/1.1 200 OK\r\n"
+            "Server: Tiny\r\n"
+            "Connection: close\r\n"
+            );
+        
+          pid_t pid = fork();
+          if (pid == 0){ //child 
+            
+            send(cli_socket, cgi_header_buf,strlen(cgi_header_buf),0);
+
+            setenv("QUERY_STRING", query_env, 1);
+            dup2(cli_socket, STDOUT_FILENO);
+            execl("./cgi-bin/adder", "adder", NULL);
+          }
+          wait(NULL); 
+          close(cli_socket);
+          continue;
+        }
+
+        // 루트 index.html
+        if (strcmp(url, "/") == 0) url = "/home.html";
+
+        // 선행 '/' 제거해서 상대경로로
+        if (url[0] == '/') url++;
+
+        printf("URL: %s\n", url);
+        // char body_buf[4096];        
+        char header_buf[512];
+
+        //GET만 받기
+        if (!method || strcmp(method, "GET") != 0) {
+            send_response(cli_socket, 400, "Bad Request", "<h1>400 Bad Request</h1>\r\n");
+            close(cli_socket);
+            continue;
+        }
+          //GET URL확인 
+
+        // url 열기 
+        int open_fd = open(url, O_RDONLY);
+        if (open_fd < 0) {
+            send_response(cli_socket, 404, "Not Found", "<h1>404 Not Found</h1>>\r\n");
+            close(cli_socket);
+            continue;
+        }      
+        
+        // // url 파일 읽고 바디 버퍼에 넣기
+        // ssize_t read_nb = read(open_fd, body_buf,sizeof(body_buf));
+        // if (read_nb < 0 ) {perror("read error"); exit(1);}
+
+        // 파일 metadata 구조체 stat
+        struct stat sb;
+        // fstat(int fildes, struct stat *buf);
+        if (fstat(open_fd, &sb) < 0) { 
+          perror("fstat error"); 
+          close(open_fd); exit(1); 
+        }
+        
+        // file size 가져오기 
+        size_t body_size = (size_t)sb.st_size;
+
+        char *body_buf = (char *)malloc(body_size);
+        if (!body_buf) { perror("malloc error"); close(open_fd); exit(1); }
+
+        // rio_readn - Robustly read n bytes (unbuffered)
+        ssize_t read_nb = rio_readn(open_fd, body_buf, body_size);
+        if (read_nb < 0) {
+          perror("read error");
+          free(body_buf);
+          close(open_fd); exit(1); 
+        }
+        // header 
+        sprintf(header_buf,
+            "HTTP/1.1 200 OK\r\n"
+            "Server: Tiny\r\n"
+            "Content-Length: %ld\r\n"
+            "Content-Type: text/html\r\n"
+            "Connection: close\r\n\r\n",
+            read_nb
+        );
+
+        send(cli_socket,header_buf,strlen(header_buf), 0);
+        rio_writen(cli_socket, body_buf, read_nb);
+
+        free(body_buf);
+        close(open_fd);
+        close(cli_socket);
+        continue;
+    }
+
+    close(newsocket);
 }
