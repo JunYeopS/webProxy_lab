@@ -1,5 +1,6 @@
 #include "csapp.h"
 #include <ctype.h>
+#include <pthread.h>
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -13,21 +14,40 @@ static const char *user_agent_hdr =
 static void doit_proxy(int clientfd);
 static void parse_uri(const char *uri, char *host, char *path, char *port);
 static void request_headers(rio_t *client_rio, char *host, char *hdr_buf, size_t hdr_bufsz, int *has_host);
+static void *handle_mul_cli(void * arg);
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
-        exit(1);
-    }
 
-    int listenfd = Open_listenfd(argv[1]);
-    while (1) {
-        struct sockaddr_storage clientaddr;
-        socklen_t clientlen = sizeof(clientaddr);
-        int clientfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
-        doit_proxy(clientfd);
-        Close(clientfd);
-    }
+  if (argc != 2) {
+      fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+      exit(1);
+  }
+
+  int listenfd = Open_listenfd(argv[1]);
+  while (1) {
+      struct sockaddr_storage clientaddr;
+      socklen_t clientlen = sizeof(clientaddr);
+      pthread_t tid;
+      int *clientfd = malloc(sizeof(int));
+
+      *clientfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
+
+      // handle multi client with thread
+      // pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void *), void *arg);
+      pthread_create(&tid, NULL, handle_mul_cli, clientfd );
+  }
+}
+// void * 반환 
+static void *handle_mul_cli(void * arg) {
+  pthread_detach(pthread_self()); //detach로 좀비 thread 회수
+
+  int clientfd = *(int *)arg;
+  free(arg);
+
+  doit_proxy(clientfd);
+  Close(clientfd);
+
+  return(NULL);
 }
 
 static void doit_proxy(int clientfd) {
